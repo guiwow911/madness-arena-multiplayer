@@ -73,14 +73,11 @@
   let ws = null, connected = false, myId = null, myName = '玩家';
   const peers = new Map();
   const $ = id => document.getElementById(id);
-  const sid = (() => {
-    let value = sessionStorage.getItem('madness-online-sid');
-    if (!value) {
-      value = (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(16) + '-' + Math.random().toString(16).slice(2));
-      sessionStorage.setItem('madness-online-sid', value);
-    }
-    return value;
-  })();
+  // One fresh identity per page instance. sessionStorage can be cloned when a
+  // tab is duplicated, which would merge two real players and make their
+  // coordinates overwrite one another on the server.
+  const sid = crypto.randomUUID ? crypto.randomUUID() :
+    `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}-${Math.random().toString(16).slice(2)}`;
 
   function setStatus(on, text) {
     $('connStatus').innerHTML =

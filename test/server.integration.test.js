@@ -60,7 +60,8 @@ test('UI and Ruffle transports share one player and use compatible frame types',
   const ui = await connect(`ws://127.0.0.1:${port}/?sid=${sidA}`);
   const proxy = await connect(`ws://127.0.0.1:${port}/proxy?sid=${sidA}`);
   const second = await connect(`ws://127.0.0.1:${port}/?sid=${sidB}`);
-  t.after(() => { ui.ws.close(); proxy.ws.close(); second.ws.close(); });
+  const secondProxy = await connect(`ws://127.0.0.1:${port}/proxy?sid=${sidB}`);
+  t.after(() => { ui.ws.close(); proxy.ws.close(); second.ws.close(); secondProxy.ws.close(); });
 
   ui.ws.send(JSON.stringify({ t: 'join', name: 'Alice' }));
   const uiWelcome = await waitFor(ui, m => m.t === 'welcome', 'UI welcome');
@@ -75,6 +76,17 @@ test('UI and Ruffle transports share one player and use compatible frame types',
 
   second.ws.send(JSON.stringify({ t: 'join', name: 'Bob' }));
   const bobWelcome = await waitFor(second, m => m.t === 'welcome', 'second player welcome');
+  secondProxy.ws.send('127.0.0.1:8082');
+  secondProxy.ws.send(JSON.stringify({ t: 'join', name: 'Bob' }) + '\0');
+  const bobProxyWelcome = await waitFor(secondProxy, m => m.t === 'welcome', 'second proxy welcome');
+  assert.equal(bobProxyWelcome.message.id, bobWelcome.message.id, 'each tab UI and game proxy must share an id');
   const peerJoin = await waitFor(ui, m => m.t === 'peerJoin' && m.id === bobWelcome.message.id, 'peerJoin');
   assert.equal(peerJoin.message.name, 'Bob');
+
+  secondProxy.ws.send(JSON.stringify({ t: 'state', x: 123, y: 456, face: 'right' }) + '\0');
+  const state = await waitFor(proxy, m => m.t === 'state' && m.id === bobWelcome.message.id, 'Ruffle state relay');
+  assert.equal(state.message.x, 123);
+  assert.equal(state.message.y, 456);
+  assert.ok(state.raw instanceof ArrayBuffer, 'remote XMLSocket state must be delivered as binary/NUL-terminated data');
+  assert.ok(new TextDecoder().decode(state.raw).endsWith('\0'));
 });
