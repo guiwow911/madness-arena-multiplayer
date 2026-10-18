@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: madness-arena-multiplayer
+    runtime: node
+    plan: free
+    buildCommand: ""
+    startCommand: node server.js
+    healthCheckPath: /
+    autoDeploy: true

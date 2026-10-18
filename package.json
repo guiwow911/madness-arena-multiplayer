@@ -1,0 +1,12 @@
+{
+  "name": "madness-arena-multiplayer",
+  "version": "1.0.0",
+  "description": "暴力迪吧联合计划 · 网页联机版（Ruffle + 单端口 Node 服务器）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

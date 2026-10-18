@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>暴力迪吧联合计划 · 联机版</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:#101018; color:#ddd; font-family:"Microsoft YaHei","Segoe UI",sans-serif;
+    height:100vh; display:flex; flex-direction:column; overflow:hidden;
+  }
+  .toolbar {
+    display:flex; align-items:center; gap:10px; padding:8px 16px;
+    background:#1a1a28; border-bottom:1px solid #2c2c40; flex:0 0 auto; flex-wrap:wrap;
+  }
+  .toolbar label { font-size:13px; color:#9aa; }
+  .toolbar input[type=text] {
+    background:#0e0e18; color:#ddd; border:1px solid #333; padding:4px 8px; border-radius:4px; font-size:13px; width:140px;
+  }
+  .toolbar input[type=color] { background:#0e0e18; border:1px solid #333; padding:2px; border-radius:4px; }
+  .btn {
+    border:1px solid #3a3a55; background:#23233a; color:#ccc; padding:5px 12px;
+    border-radius:4px; cursor:pointer; font-size:13px;
+  }
+  .btn:hover { background:#2c2c48; }
+  .btn.primary { background:#4a6cf7; border-color:#5a7cff; color:#fff; }
+  .btn.primary:hover { background:#5b7bff; }
+  .btn.red { background:#7a2a2a; border-color:#9a3a3a; }
+  .btn:disabled { opacity:.5; cursor:not-allowed; }
+  .status-dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; vertical-align:middle; }
+  .status-dot.on { background:#3f9; box-shadow:0 0 6px #3f9; }
+  .status-dot.off { background:#f44; }
+  #connStatus { font-size:13px; color:#9aa; }
+  #peerCount { font-size:13px; color:#7cf; }
+  .peer-panel {
+    flex:0 0 auto; background:#16161f; border-bottom:1px solid #2c2c40;
+    padding:6px 16px; min-height:0;
+  }
+  .peer-chip {
+    display:inline-flex; align-items:center; gap:6px; background:#23233a;
+    border:1px solid #3a3a55; padding:3px 10px; border-radius:16px; font-size:12px; margin:2px 6px 2px 0;
+  }
+  .peer-chip.me { border-color:#4a6cf7; color:#8aa4ff; }
+  .peer-chip .dot { width:8px; height:8px; border-radius:50%; background:#4a6cf7; }
+  .game-wrap { flex:1 1 auto; position:relative; min-height:0; background:#000; }
+  #ruffle-player { width:100%; height:100%; }
+  .hint { position:absolute; bottom:8px; left:8px; color:#888; font-size:11px; z-index:5; }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <label>昵称</label>
+  <input type="text" id="nickname" value="玩家" maxlength="16">
+  <button class="btn primary" id="btnConnect">连接服务器</button>
+  <button class="btn red" id="btnDisconnect" disabled>断开</button>
+  <span id="connStatus"><span class="status-dot off"></span>未连接</span>
+  <span id="peerCount"></span>
+</div>
+
+<div class="peer-panel"><span style="font-size:12px;color:#778">在线玩家：</span><span id="peerList"></span></div>
+
+<div class="game-wrap">
+  <div id="ruffle-player"></div>
+  <div class="hint">按 F 眼部激光 · 输入 zjpyyds 作弊码 · 其他人以彩色菱形标记显示</div>
+</div>
+
+<script src="ruffle/ruffle.js"></script>
+<script>
+(function () {
+  'use strict';
+  let ws = null, connected = false, myId = null, myName = '玩家';
+  const peers = new Map();
+  const $ = id => document.getElementById(id);
+
+  function setStatus(on, text) {
+    $('connStatus').innerHTML =
+      '<span class="status-dot ' + (on ? 'on' : 'off') + '"></span>' + text;
+  }
+
+  // ---------- WebSocket ----------
+  function getWsUrl() {
+    const s = new URLSearchParams(location.search).get('server');
+    const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    return s ? (proto + s) : (proto + location.host);
+  }
+
+  function connect() {
+    if (connected) return;
+    myName = $('nickname').value.trim() || '玩家';
+    const url = getWsUrl();
+    setStatus(false, '连接中…');
+    try { ws = new WebSocket(url); }
+    catch (e) { setStatus(false, '无法连接'); return; }
+
+    ws.onopen = () => {
+      connected = true;
+      setStatus(true, '已连接');
+      $('btnDisconnect').disabled = false;
+      $('btnConnect').disabled = true;
+      ws.send(JSON.stringify({ t: 'join', name: myName }));
+      notifyGame({ t: 'conn', on: true });
+    };
+    ws.onmessage = ev => handleServer(JSON.parse(ev.data));
+    ws.onclose = () => {
+      connected = false;
+      setStatus(false, '连接断开');
+      $('btnDisconnect').disabled = true;
+      $('btnConnect').disabled = false;
+      peers.clear(); renderPeers();
+      notifyGame({ t: 'conn', on: false });
+    };
+    ws.onerror = () => { if (!connected) setStatus(false, '连接失败'); };
+  }
+
+  function handleServer(msg) {
+    switch (msg.t) {
+      case 'welcome':
+        myId = msg.id;
+        // 通知游戏已登录（触发 AS2 onLogin -> 显示HUD+置connected）
+        authGame('zjNetLogin', [String(myId)]);
+        break;
+      case 'peers': msg.list.forEach(p => peers.set(p.id, p)); renderPeers(); break;
+      case 'peerJoin': peers.set(msg.id, { id: msg.id, name: msg.name }); renderPeers(); break;
+      case 'peerLeave': peers.delete(msg.id); renderPeers(); break;
+      case 'state':
+        // 转发给游戏内 AS2 更新远端标记
+        notifyGame(msg);
+        break;
+    }
+  }
+
+  function authGame(name, args) {
+    const el = document.querySelector('ruffle-player');
+    if (!el) return;
+    try {
+      if (typeof el[name] === 'function') { el[name].apply(el, args); return; }
+    } catch (e) {}
+    try {
+      if (typeof el.callExternalInterface === 'function') {
+        el.callExternalInterface(name, args.length === 1 ? args[0] : args);
+      }
+    } catch (e) {}
+  }
+
+  function renderPeers() {
+    let html = '';
+    peers.forEach((p, id) => {
+      if (id === myId) return;
+      html += '<span class="peer-chip">' +
+              '<span class="dot" style="background:#' + (id % 3 === 0 ? '55ccff' : id % 3 === 1 ? 'ffcc44' : '66ff88') + '"></span>' +
+              (p.name || ('P' + id)) + '</span>';
+    });
+    $('peerList').innerHTML = html || '<span style="color:#666;font-size:12px">暂无其他人</span>';
+    $('peerCount').textContent = peers.size > 1 ? ('共 ' + peers.size + ' 人') : '';
+  }
+
+  // ---------- 桥接：AS2 -> 页面 -> WebSocket ----------
+  window.__as2Calls = 0;
+  window.zjSocketSend = function (jsonStr) {
+    window.__as2Calls = (window.__as2Calls || 0) + 1;
+    if (ws && connected) { try { ws.send(jsonStr); } catch (e) {} }
+  };
+  // 页面 -> SWF（Ruffle 元素上的 addCallback 暴露可直接调用的属性）
+  function notifyGame(msg) {
+    const el = document.querySelector('ruffle-player');
+    if (!el) return;
+    const json = JSON.stringify(msg);
+    try {
+      // addCallback 把接口暴露为元素属性（源码 Mn 构造里定义了这些属性）
+      if (typeof el.zjNetUpdate === 'function') { el.zjNetUpdate(json); return; }
+    } catch (e) {}
+    try {
+      if (typeof el.callExternalInterface === 'function') {
+        el.callExternalInterface('zjNetUpdate', json);
+      }
+    } catch (e) { /* SWF 未就绪忽略 */ }
+  }
+
+  // ---------- Ruffle ----------
+  function init() {
+    if (!window.RufflePlayer) { show('等待 Ruffle 加载…'); return; }
+    const player = window.RufflePlayer.newest();
+    const holder = $('ruffle-player');
+    const p = player.createPlayer();
+    p.config = {
+      autoplay: 'on', backgroundColor: '#000000',
+      letterbox: 'on', quality: 'high', scale: 'showAll',
+      logLevel: 'debug',
+      socketProxy: [
+        { host: '127.0.0.1', port: 8082, proxyUrl: (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/proxy' }
+      ],
+      openUrlMode: 'deny', allowNetworking: 'all',
+      allowScriptAccess: 'always'
+    };
+    holder.appendChild(p);
+    // SWF 就绪后标记，并触发游戏内联机初始化
+    p.addEventListener('loadedmetadata', () => {
+      try { p.__ready = true; } catch (e) {}
+    });
+    // 加载联机版 SWF（同一路径，多玩家各开一个页面）
+    p.load(location.origin + '/patched_online.swf');
+    window.__p = p;
+  }
+
+  $('btnConnect').addEventListener('click', connect);
+  $('btnDisconnect').addEventListener('click', () => { if (ws) ws.close(); });
+  window.addEventListener('load', init);
+  window.__bridgeReady = true;
+})();
+</script>
+</body>
+</html>
