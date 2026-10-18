@@ -87,9 +87,11 @@ function wsEncode(str) {
   const payload = Buffer.from(str, 'utf8');
   const len = payload.length;
   let h;
-  if (len < 126) { h = Buffer.alloc(2); h[0] = 0x81; h[1] = len; }
-  else if (len < 65536) { h = Buffer.alloc(4); h[0] = 0x81; h[1] = 126; h.writeUInt16BE(len, 2); }
-  else { h = Buffer.alloc(10); h[0] = 0x81; h[1] = 127; h.writeBigUInt64BE(BigInt(len), 2); }
+  // 用二进制帧(0x82)：Ruffle 的 socketProxy 是字节管道，只认二进制帧，
+  // 文本帧(0x81)会被静默丢弃 → 玩家收不到 welcome/state。浏览器 ws 同样接受二进制。
+  if (len < 126) { h = Buffer.alloc(2); h[0] = 0x82; h[1] = len; }
+  else if (len < 65536) { h = Buffer.alloc(4); h[0] = 0x82; h[1] = 126; h.writeUInt16BE(len, 2); }
+  else { h = Buffer.alloc(10); h[0] = 0x82; h[1] = 127; h.writeBigUInt64BE(BigInt(len), 2); }
   return Buffer.concat([h, payload]);
 }
 function wsDecode(buf) {
