@@ -20,7 +20,7 @@ function connect(url) {
     ws.addEventListener('message', event => {
       const raw = event.data;
       const text = raw instanceof ArrayBuffer ? new TextDecoder().decode(raw) : raw;
-      try { messages.push({ message: JSON.parse(text), raw }); } catch (_) {}
+      try { messages.push({ message: JSON.parse(text.replace(/\0+$/, '')), raw }); } catch (_) {}
     });
     ws.addEventListener('open', () => resolve({ ws, messages }), { once: true });
     ws.addEventListener('error', reject, { once: true });
@@ -67,9 +67,10 @@ test('UI and Ruffle transports share one player and use compatible frame types',
   assert.equal(typeof uiWelcome.raw, 'string', 'browser UI must receive text frames');
 
   proxy.ws.send('127.0.0.1:8082'); // Ruffle socketProxy destination preface
-  proxy.ws.send(JSON.stringify({ t: 'join', name: 'Alice' }));
+  proxy.ws.send(JSON.stringify({ t: 'join', name: 'Alice' }) + '\0');
   const proxyWelcome = await waitFor(proxy, m => m.t === 'welcome', 'proxy welcome');
   assert.ok(proxyWelcome.raw instanceof ArrayBuffer, 'Ruffle proxy must receive binary frames');
+  assert.ok(new TextDecoder().decode(proxyWelcome.raw).endsWith('\0'), 'XMLSocket server messages must be NUL-terminated');
   assert.equal(proxyWelcome.message.id, uiWelcome.message.id, 'one browser tab must count as one player');
 
   second.ws.send(JSON.stringify({ t: 'join', name: 'Bob' }));

@@ -167,7 +167,14 @@ server.on('upgrade', (req, socket) => {
     if (sid) sessions.set(sid, player);
   }
   const transport = {
-    send: (str) => { try { if (!socket.destroyed) socket.write(wsEncode(str, pathname === '/proxy')); } catch (e) {} }
+    send: (str) => {
+      try {
+        if (socket.destroyed) return;
+        // UI frames contain plain JSON; XMLSocket messages are NUL-terminated.
+        const payload = pathname === '/proxy' ? str.replace(/\n$/, '\0') : str.replace(/\n$/, '');
+        socket.write(wsEncode(payload, pathname === '/proxy'));
+      } catch (e) {}
+    }
   };
   player.transports.add(transport);
   // 一页游戏会有 UI 和 Ruffle 两条 WS；统一作为一个玩家，并把消息回送到两个通道。
@@ -192,8 +199,10 @@ server.on('upgrade', (req, socket) => {
         const t = text.trim();
         if (/^[\w.\-]+:\d+$/.test(t)) { firstFrameHandled = true; continue; }
       }
-      for (const line of text.split('\n')) {
-        const s = line.trim().replace(/\0/g, '');
+      // XMLSocket.send() appends NUL and Ruffle calls AS2 onData only after NUL.
+      // Also accept line-delimited UI/test clients and coalesced socket messages.
+      for (const line of text.split(/[\0\n]+/)) {
+        const s = line.trim();
         if (!s) continue;
         try { handleMessage(player, JSON.parse(s)); } catch (e) {}
       }
