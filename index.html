@@ -73,6 +73,14 @@
   let ws = null, connected = false, myId = null, myName = '玩家';
   const peers = new Map();
   const $ = id => document.getElementById(id);
+  const sid = (() => {
+    let value = sessionStorage.getItem('madness-online-sid');
+    if (!value) {
+      value = (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(16) + '-' + Math.random().toString(16).slice(2));
+      sessionStorage.setItem('madness-online-sid', value);
+    }
+    return value;
+  })();
 
   function setStatus(on, text) {
     $('connStatus').innerHTML =
@@ -83,7 +91,9 @@
   function getWsUrl() {
     const s = new URLSearchParams(location.search).get('server');
     const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    return s ? (proto + s) : (proto + location.host);
+    const url = new URL(s ? (proto + s) : (proto + location.host));
+    url.searchParams.set('sid', sid);
+    return url.toString();
   }
 
   function connect() {
@@ -102,13 +112,16 @@
       ws.send(JSON.stringify({ t: 'join', name: myName }));
       notifyGame({ t: 'conn', on: true });
     };
-    ws.onmessage = ev => handleServer(JSON.parse(ev.data));
+    ws.onmessage = ev => {
+      if (typeof ev.data !== 'string') return;
+      try { handleServer(JSON.parse(ev.data)); } catch (e) { console.warn('忽略无效服务器消息', e); }
+    };
     ws.onclose = () => {
       connected = false;
       setStatus(false, '连接断开');
       $('btnDisconnect').disabled = true;
       $('btnConnect').disabled = false;
-      peers.clear(); renderPeers();
+      myId = null; peers.clear(); renderPeers();
       notifyGame({ t: 'conn', on: false });
     };
     ws.onerror = () => { if (!connected) setStatus(false, '连接失败'); };
@@ -145,15 +158,27 @@
   }
 
   function renderPeers() {
-    let html = '';
+    const list = $('peerList');
+    list.replaceChildren();
     peers.forEach((p, id) => {
       if (id === myId) return;
-      html += '<span class="peer-chip">' +
-              '<span class="dot" style="background:#' + (id % 3 === 0 ? '55ccff' : id % 3 === 1 ? 'ffcc44' : '66ff88') + '"></span>' +
-              (p.name || ('P' + id)) + '</span>';
+      const chip = document.createElement('span');
+      chip.className = 'peer-chip';
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.style.backgroundColor = id % 3 === 0 ? '#55ccff' : id % 3 === 1 ? '#ffcc44' : '#66ff88';
+      const name = document.createElement('span');
+      name.textContent = p.name || ('P' + id);
+      chip.append(dot, name);
+      list.appendChild(chip);
     });
-    $('peerList').innerHTML = html || '<span style="color:#666;font-size:12px">暂无其他人</span>';
-    $('peerCount').textContent = peers.size > 1 ? ('共 ' + peers.size + ' 人') : '';
+    if (!list.childElementCount) {
+      const empty = document.createElement('span');
+      empty.style.cssText = 'color:#666;font-size:12px';
+      empty.textContent = '暂无其他人';
+      list.appendChild(empty);
+    }
+    $('peerCount').textContent = myId !== null ? ('共 ' + (peers.size + 1) + ' 人') : '';
   }
 
   // ---------- 桥接：AS2 -> 页面 -> WebSocket ----------
@@ -189,7 +214,7 @@
       letterbox: 'on', quality: 'high', scale: 'showAll',
       logLevel: 'debug',
       socketProxy: [
-        { host: '127.0.0.1', port: 8082, proxyUrl: (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/proxy' }
+        { host: '127.0.0.1', port: 8082, proxyUrl: (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/proxy?sid=' + encodeURIComponent(sid) }
       ],
       openUrlMode: 'deny', allowNetworking: 'all',
       allowScriptAccess: 'always'

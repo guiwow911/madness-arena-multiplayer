@@ -34,6 +34,7 @@ function mimeOf(p) {
 
 // ---------- 玩家 ----------
 const players = new Map();
+const sessions = new Map();
 let nextId = 1;
 function makeId() { return nextId++; }
 
@@ -57,11 +58,18 @@ function send(player, msg) {
 function handleMessage(player, msg) {
   if (!msg || typeof msg !== 'object') return;
   if (msg.t === 'join') {
-    player.name = String(msg.name || ('Player' + player.id)).slice(0, 24);
+    const name = String(msg.name || ('Player' + player.id)).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 24) || ('Player' + player.id);
+    const changed = player.name !== name;
+    player.name = name;
     send(player, { t: 'welcome', id: player.id, name: player.name });
     send(player, { t: 'peers', list: peerList().filter(p => p.id !== player.id) });
-    broadcast({ t: 'peerJoin', id: player.id, name: player.name }, player.id);
-    console.log(`[join] #${player.id} ${player.name} (共 ${players.size} 人)`);
+    if (!player.joined) {
+      player.joined = true;
+      broadcast({ t: 'peerJoin', id: player.id, name: player.name }, player.id);
+      console.log(`[join] #${player.id} ${player.name} (共 ${players.size} 人)`);
+    } else if (changed) {
+      broadcast({ t: 'peerJoin', id: player.id, name: player.name }, player.id);
+    }
     return;
   }
   if (msg.t === 'state') {
@@ -73,9 +81,11 @@ function handleMessage(player, msg) {
   if (msg.t === 'ping') { send(player, { t: 'pong', ts: msg.ts }); return; }
 }
 
-function removePlayer(player) {
-  if (!players.has(player.id)) return;
+function removePlayer(player, transport) {
+  player.transports.delete(transport);
+  if (player.transports.size || !players.has(player.id)) return;
   players.delete(player.id);
+  if (player.sid) sessions.delete(player.sid);
   broadcast({ t: 'peerLeave', id: player.id });
   console.log(`[leave] #${player.id} ${player.name || ''} (剩 ${players.size} 人)`);
 }
@@ -83,15 +93,16 @@ function removePlayer(player) {
 // ---------- WebSocket ----------
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 function wsAccept(k) { return crypto.createHash('sha1').update(k + GUID).digest('base64'); }
-function wsEncode(str) {
+function wsEncode(str, binary = true) {
   const payload = Buffer.from(str, 'utf8');
   const len = payload.length;
   let h;
-  // 用二进制帧(0x82)：Ruffle 的 socketProxy 是字节管道，只认二进制帧，
-  // 文本帧(0x81)会被静默丢弃 → 玩家收不到 welcome/state。浏览器 ws 同样接受二进制。
-  if (len < 126) { h = Buffer.alloc(2); h[0] = 0x82; h[1] = len; }
-  else if (len < 65536) { h = Buffer.alloc(4); h[0] = 0x82; h[1] = 126; h.writeUInt16BE(len, 2); }
-  else { h = Buffer.alloc(10); h[0] = 0x82; h[1] = 127; h.writeBigUInt64BE(BigInt(len), 2); }
+  // Ruffle socketProxy 是字节管道，需要二进制帧；页面 WebSocket 则应发送文本帧，
+  // 否则浏览器收到 Blob，JSON.parse(ev.data) 会抛错。
+  const opcode = binary ? 0x82 : 0x81;
+  if (len < 126) { h = Buffer.alloc(2); h[0] = opcode; h[1] = len; }
+  else if (len < 65536) { h = Buffer.alloc(4); h[0] = opcode; h[1] = 126; h.writeUInt16BE(len, 2); }
+  else { h = Buffer.alloc(10); h[0] = opcode; h[1] = 127; h.writeBigUInt64BE(BigInt(len), 2); }
   return Buffer.concat([h, payload]);
 }
 function wsDecode(buf) {
@@ -136,6 +147,8 @@ const server = http.createServer((req, res) => {
 });
 
 server.on('upgrade', (req, socket) => {
+  const pathname = new URL(req.url, 'http://localhost').pathname;
+  if (pathname !== '/' && pathname !== '/proxy') { socket.destroy(); return; }
   const key = req.headers['sec-websocket-key'];
   if (!key) { socket.destroy(); return; }
   socket.write(
@@ -145,11 +158,20 @@ server.on('upgrade', (req, socket) => {
   );
   socket.setNoDelay(true);
 
-  const player = {
-    id: makeId(), name: null, state: null,
-    ws: { send: (str) => { try { socket.write(wsEncode(str)); } catch (e) {} } }
+  const sidParam = new URL(req.url, 'http://localhost').searchParams.get('sid');
+  const sid = sidParam && /^[a-f0-9-]{16,64}$/i.test(sidParam) ? sidParam : null;
+  let player = sid ? sessions.get(sid) : null;
+  if (!player) {
+    player = { id: makeId(), sid, name: null, state: null, joined: false, transports: new Set() };
+    players.set(player.id, player);
+    if (sid) sessions.set(sid, player);
+  }
+  const transport = {
+    send: (str) => { try { if (!socket.destroyed) socket.write(wsEncode(str, pathname === '/proxy')); } catch (e) {} }
   };
-  players.set(player.id, player);
+  player.transports.add(transport);
+  // 一页游戏会有 UI 和 Ruffle 两条 WS；统一作为一个玩家，并把消息回送到两个通道。
+  player.ws = { send: (str) => { for (const t of player.transports) t.send(str); } };
 
   let buf = Buffer.alloc(0);
   let firstFrameHandled = false;
@@ -178,8 +200,8 @@ server.on('upgrade', (req, socket) => {
     }
   });
 
-  socket.on('close', () => removePlayer(player));
-  socket.on('error', () => removePlayer(player));
+  socket.on('close', () => removePlayer(player, transport));
+  socket.on('error', () => removePlayer(player, transport));
 });
 
 server.listen(PORT, '0.0.0.0', () => {
