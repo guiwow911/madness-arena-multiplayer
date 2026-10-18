@@ -75,7 +75,9 @@ function handleMessage(player, msg) {
   if (msg.t === 'state') {
     player.state = { x: msg.x, y: msg.y, face: msg.face, status: msg.status,
       weapon: msg.weapon, aim: msg.aim, hp: msg.hp, dead: msg.dead };
-    broadcast({ t: 'state', id: player.id, name: player.name, ...player.state }, player.id);
+    // Include the sender: its browser overlay needs its own coordinate as the
+    // camera-relative origin when positioning remote players.
+    broadcast({ t: 'state', id: player.id, name: player.name, ...player.state });
     return;
   }
   if (msg.t === 'ping') { send(player, { t: 'pong', ts: msg.ts }); return; }

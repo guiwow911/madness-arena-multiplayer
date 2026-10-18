@@ -84,6 +84,8 @@ test('UI and Ruffle transports share one player and use compatible frame types',
   assert.equal(peerJoin.message.name, 'Bob');
 
   secondProxy.ws.send(JSON.stringify({ t: 'state', x: 123, y: 456, face: 'right' }) + '\0');
+  const ownState = await waitFor(second, m => m.t === 'state' && m.id === bobWelcome.message.id, 'sender camera state');
+  assert.equal(ownState.message.x, 123, 'the sender UI needs its own coordinates as camera origin');
   const state = await waitFor(proxy, m => m.t === 'state' && m.id === bobWelcome.message.id, 'Ruffle state relay');
   assert.equal(state.message.x, 123);
   assert.equal(state.message.y, 456);

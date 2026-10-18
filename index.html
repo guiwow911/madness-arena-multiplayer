@@ -79,7 +79,11 @@
   let ws = null, connected = false, myId = null, myName = '玩家';
   const peers = new Map();
   const remoteStates = new Map();
+  let localState = null;
   const GAME_WIDTH = 850, GAME_HEIGHT = 530;
+  // The SWF's own updateMark() positions remote players relative to this
+  // camera anchor, rather than treating world coordinates as screen pixels.
+  const CAMERA_ANCHOR_X = 400, CAMERA_ANCHOR_Y = 300;
   const $ = id => document.getElementById(id);
   // One fresh identity per page instance. sessionStorage can be cloned when a
   // tab is duplicated, which would merge two real players and make their
@@ -126,7 +130,7 @@
       setStatus(false, '连接断开');
       $('btnDisconnect').disabled = true;
       $('btnConnect').disabled = false;
-      myId = null; peers.clear(); renderPeers();
+      myId = null; localState = null; peers.clear(); remoteStates.clear(); renderPeers(); renderRemotePlayers();
       notifyGame({ t: 'conn', on: false });
     };
     ws.onerror = () => { if (!connected) setStatus(false, '连接失败'); };
@@ -143,12 +147,13 @@
       case 'peerJoin': peers.set(msg.id, { id: msg.id, name: msg.name }); renderPeers(); renderRemotePlayers(); break;
       case 'peerLeave': peers.delete(msg.id); remoteStates.delete(msg.id); renderPeers(); renderRemotePlayers(); break;
       case 'state':
-        if (msg.id !== myId && Number.isFinite(Number(msg.x)) && Number.isFinite(Number(msg.y))) {
-          remoteStates.set(msg.id, { x: Number(msg.x), y: Number(msg.y) });
+        if (Number.isFinite(Number(msg.x)) && Number.isFinite(Number(msg.y))) {
+          if (msg.id === myId) localState = { x: Number(msg.x), y: Number(msg.y) };
+          else remoteStates.set(msg.id, { x: Number(msg.x), y: Number(msg.y) });
           renderRemotePlayers();
         }
-        // 页面层直接显示服务器坐标，不依赖 Ruffle ExternalInterface。
-        notifyGame(msg);
+        // The SWF already has the same state locally; only relay remote states.
+        if (msg.id !== myId) notifyGame(msg);
         break;
     }
   }
@@ -203,11 +208,15 @@
     remoteStates.forEach((pos, id) => {
       const peer = peers.get(id);
       if (!peer || id === myId) return;
+      // Convert game/world coordinates to the camera-relative arena position.
+      // This mirrors patched_online.swf's updateMark() calculation.
+      const stageX = localState ? CAMERA_ANCHOR_X + pos.x - localState.x : pos.x;
+      const stageY = localState ? CAMERA_ANCHOR_Y + pos.y - localState.y : pos.y;
       const color = id % 3 === 0 ? '#55ccff' : id % 3 === 1 ? '#ffcc44' : '#66ff88';
       const marker = document.createElement('div');
       marker.className = 'remote-player';
-      marker.style.left = `${offsetX + Math.max(0, Math.min(GAME_WIDTH, pos.x)) * scale}px`;
-      marker.style.top = `${offsetY + Math.max(0, Math.min(GAME_HEIGHT, pos.y)) * scale}px`;
+      marker.style.left = `${offsetX + stageX * scale}px`;
+      marker.style.top = `${offsetY + stageY * scale}px`;
       marker.style.color = color;
       const icon = document.createElement('span');
       icon.className = 'marker'; icon.style.backgroundColor = color;
