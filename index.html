@@ -121,9 +121,14 @@
       ws.send(JSON.stringify({ t: 'join', name: myName }));
       notifyGame({ t: 'conn', on: true });
     };
+    // 服务端 20Hz 聚合：一次可能送来多行 JSON，逐行解析
     ws.onmessage = ev => {
       if (typeof ev.data !== 'string') return;
-      try { handleServer(JSON.parse(ev.data)); } catch (e) { console.warn('忽略无效服务器消息', e); }
+      for (const line of ev.data.split('\n')) {
+        const s = line.trim();
+        if (!s) continue;
+        try { handleServer(JSON.parse(s)); } catch (e) { /* 忽略坏行 */ }
+      }
     };
     ws.onclose = () => {
       connected = false;
