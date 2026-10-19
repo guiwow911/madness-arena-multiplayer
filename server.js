@@ -55,6 +55,36 @@ function send(player, msg) {
   try { if (player.ws) player.ws.send(line); } catch (e) {}
 }
 
+// ---------- 20Hz 聚合广播（把 N 条 state 合并成每客户端一条多行消息）----------
+// 原来每个 state 都 broadcast 给所有人（含自己）= N^2 消息/帧。
+// 现在每 50ms 收集所有脏玩家，拼成一段多行文本，每个接收者只写一次 socket。
+const TICK_MS = 50;
+let aggTimer = null;
+function startAggregator() {
+  if (aggTimer) return;
+  aggTimer = setInterval(() => {
+    // 收集本帧有变化的玩家
+    const dirty = [];
+    for (const p of players.values()) {
+      if (p.stateDirty && p.state && p.joined) {
+        p.stateDirty = false;
+        dirty.push(p);
+      }
+    }
+    if (dirty.length === 0) return;
+
+    for (const recv of players.values()) {
+      if (!recv.joined) continue;
+      let chunk = '';
+      for (const p of dirty) {
+        if (p.id === recv.id) continue;  // 不回显自己，省一半流量
+        chunk += JSON.stringify({ t: 'state', id: p.id, name: p.name || ('P' + p.id), x: p.state.x, y: p.state.y, face: p.state.face }) + '\n';
+      }
+      if (chunk) { try { if (recv.ws) recv.ws.send(chunk); } catch (e) {} }
+    }
+  }, TICK_MS);
+}
+
 function handleMessage(player, msg) {
   if (!msg || typeof msg !== 'object') return;
   if (msg.t === 'join') {
@@ -73,11 +103,11 @@ function handleMessage(player, msg) {
     return;
   }
   if (msg.t === 'state') {
-    player.state = { x: msg.x, y: msg.y, face: msg.face, status: msg.status,
-      weapon: msg.weapon, aim: msg.aim, hp: msg.hp, dead: msg.dead };
-    // Include the sender: its browser overlay needs its own coordinate as the
-    // camera-relative origin when positioning remote players.
-    broadcast({ t: 'state', id: player.id, name: player.name, ...player.state });
+    // 不再逐条广播（N 个玩家 => N^2 条消息，是卡顿主因）。
+    // 只记录最新状态并标脏，由 20Hz 聚合器批量下发。
+    player.state = { x: msg.x, y: msg.y, face: msg.face };
+    player.stateDirty = true;
+    player.lastSeen = Date.now();
     return;
   }
   if (msg.t === 'ping') { send(player, { t: 'pong', ts: msg.ts }); return; }
@@ -216,6 +246,7 @@ server.on('upgrade', (req, socket) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
+  startAggregator();
   console.log(`[web+ws+proxy] 监听 0.0.0.0:${PORT}`);
   console.log('联机服务器已就绪（Render 单端口模式）。');
   console.log(`  网页客户端 ws(s)://<host>:${PORT}   Ruffle socketProxy ${'/'}proxy`);

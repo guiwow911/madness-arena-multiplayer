@@ -150,7 +150,7 @@
         if (Number.isFinite(Number(msg.x)) && Number.isFinite(Number(msg.y))) {
           if (msg.id === myId) localState = { x: Number(msg.x), y: Number(msg.y) };
           else remoteStates.set(msg.id, { x: Number(msg.x), y: Number(msg.y) });
-          renderRemotePlayers();
+          scheduleRender();
         }
         // The SWF already has the same state locally; only relay remote states.
         if (msg.id !== myId) notifyGame(msg);
@@ -195,40 +195,77 @@
     $('peerCount').textContent = myId !== null ? ('共 ' + (peers.size + 1) + ' 人') : '';
   }
 
+  // ---------- 远端玩家渲染（优化：rAF 合并 + 缓存矩形 + 复用 DOM）----------
+  let _rafPending = false;
+  let _rectCache = null;
+  let _markerEls = new Map();   // id -> element，复用节点，不再每次重建
+
+  function scheduleRender() {
+    if (_rafPending) return;
+    _rafPending = true;
+    requestAnimationFrame(() => {
+      _rafPending = false;
+      renderRemotePlayers();
+    });
+  }
+
   function renderRemotePlayers() {
     const layer = $('remotePlayers');
-    const area = $('ruffle-player').getBoundingClientRect();
-    if (!area.width || !area.height) return;
-    // SWF stage is 850×530 and Ruffle uses scale=showAll, so preserve its
-    // letterboxed content rectangle instead of stretching game coordinates.
-    const scale = Math.min(area.width / GAME_WIDTH, area.height / GAME_HEIGHT);
-    const offsetX = (area.width - GAME_WIDTH * scale) / 2;
-    const offsetY = (area.height - GAME_HEIGHT * scale) / 2;
-    const fragment = document.createDocumentFragment();
+    // 缓存容器矩形，只在尺寸变化时读取（避免每帧强制重排）
+    if (!_rectCache || !_rectCache.el || _rectCache.el !== layer.firstChild) {
+      const area = $('ruffle-player').getBoundingClientRect();
+      if (!area.width || !area.height) return;
+      const scale = Math.min(area.width / GAME_WIDTH, area.height / GAME_HEIGHT);
+      _rectCache = {
+        scale,
+        offsetX: (area.width - GAME_WIDTH * scale) / 2,
+        offsetY: (area.height - GAME_HEIGHT * scale) / 2
+      };
+    }
+    const { scale, offsetX, offsetY } = _rectCache;
+    const seen = new Set();
+
     remoteStates.forEach((pos, id) => {
       const peer = peers.get(id);
       if (!peer || id === myId) return;
-      // Convert game/world coordinates to the camera-relative arena position.
-      // This mirrors patched_online.swf's updateMark() calculation.
+      seen.add(id);
       const stageX = localState ? CAMERA_ANCHOR_X + pos.x - localState.x : pos.x;
       const stageY = localState ? CAMERA_ANCHOR_Y + pos.y - localState.y : pos.y;
-      const color = id % 3 === 0 ? '#55ccff' : id % 3 === 1 ? '#ffcc44' : '#66ff88';
-      const marker = document.createElement('div');
-      marker.className = 'remote-player';
-      marker.style.left = `${offsetX + stageX * scale}px`;
-      marker.style.top = `${offsetY + stageY * scale}px`;
-      marker.style.color = color;
-      const icon = document.createElement('span');
-      icon.className = 'marker'; icon.style.backgroundColor = color;
-      const label = document.createElement('span');
-      label.className = 'name'; label.textContent = peer.name || `P${id}`;
-      marker.append(icon, label);
-      fragment.appendChild(marker);
+      const left = offsetX + stageX * scale;
+      const top = offsetY + stageY * scale;
+
+      let marker = _markerEls.get(id);
+      if (!marker) {
+        const color = id % 3 === 0 ? '#55ccff' : id % 3 === 1 ? '#ffcc44' : '#66ff88';
+        marker = document.createElement('div');
+        marker.className = 'remote-player';
+        // 用 transform 定位，触发合成层，避免布局重排
+        marker.style.transform = 'translate(-50%,-100%)';
+        marker.style.willChange = 'transform';
+        marker.style.color = color;
+        const icon = document.createElement('span');
+        icon.className = 'marker'; icon.style.backgroundColor = color;
+        const label = document.createElement('span');
+        label.className = 'name'; label.textContent = peer.name || `P${id}`;
+        marker.append(icon, label);
+        layer.appendChild(marker);
+        _markerEls.set(id, marker);
+      }
+      marker.style.left = left + 'px';
+      marker.style.top = top + 'px';
     });
-    layer.replaceChildren(fragment);
-    const count = [...remoteStates.keys()].filter(id => id !== myId && peers.has(id)).length;
+
+    // 清理已离开的玩家节点
+    _markerEls.forEach((el, id) => {
+      if (!seen.has(id)) { el.remove(); _markerEls.delete(id); }
+    });
+
+    const count = seen.size;
     $('syncStatus').textContent = count ? `已收到 ${count} 名玩家的位置` : '';
   }
+
+  // 尺寸变化时清缓存并重排
+  window.addEventListener('resize', () => { _rectCache = null; scheduleRender(); });
 
   // ---------- 桥接：AS2 -> 页面 -> WebSocket ----------
   window.__as2Calls = 0;
